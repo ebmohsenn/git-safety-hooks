@@ -158,7 +158,7 @@ to a one-line subject, and never blocks a commit.
 ## Install
 
 ```sh
-git clone https://github.com/<you>/git-safety-hooks ~/src/git-safety-hooks
+git clone https://github.com/mohsenebrahimizadeh-ai/git-safety-hooks ~/src/git-safety-hooks
 cd your-repo
 
 # Option A — point this repo at the clone (one machine; update with `git pull` in the clone)
@@ -201,7 +201,7 @@ run `install.sh` here, because it would take `core.hooksPath` away from husky.
 ```yaml
 # .pre-commit-config.yaml
 repos:
-  - repo: https://github.com/<you>/git-safety-hooks
+  - repo: https://github.com/mohsenebrahimizadeh-ai/git-safety-hooks
     rev: v0.1.0
     hooks:
       - id: git-safety-pre-commit
