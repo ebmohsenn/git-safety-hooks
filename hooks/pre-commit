@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# git-safety-hooks — pre-commit
+#
+# Fast guards (well under a second on a normal commit), in this order:
+#   fix-perms       OPT-IN   make staged files world-readable (shared machines)
+#   secret-scan     ON       staged additions carrying a secret (needs node)
+#   ratchet         CONFIG   listed files may only shrink
+#   stale-revert    ON       the commit silently undoes a recent commit (needs node)
+#   migrations      CONFIG   duplicate migration numbers
+#   typecheck       OPT-IN   staged-only TypeScript check with a coverage guard (slow)
+#
+# Settings: .git-safety.conf (git-config syntax) or `git config safety.<key>`; see README.
+# Skip one run of a check: SAFETY_SKIP="secret-scan,stale-revert" git commit …
+set -euo pipefail
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB="$HOOK_DIR/lib"
+# shellcheck source=lib/config.sh
+. "$LIB/config.sh"
+cd "$SAFETY_ROOT"
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACMR || true)"
+if [ -z "$STAGED" ] && [ -z "$(git diff --cached --name-only --diff-filter=D || true)" ]; then
+  chain_local_hook pre-commit "$@"
+  exit 0
+fi
+
+
+# ── fix-perms (opt-in) ─────────────────────────────────────────────────────────────────────
+if [ "$(cfg_bool fixPerms.enabled false)" = "true" ] && ! skipped fix-perms && [ -n "$STAGED" ]; then
+  # shellcheck source=lib/fix-perms.sh
+  . "$LIB/fix-perms.sh"
+  _files=(); IFS=$'\n' read -r -d '' -a _files <<< "$STAGED" || true   # lines → array (bash 3.2: no mapfile)
+  run_fix_perms ${_files[@]+"${_files[@]}"}
+fi
+
+# ── secret scan ────────────────────────────────────────────────────────────────────────────
+if [ "$(cfg_bool secretScan.enabled true)" = "true" ] && ! skipped secret-scan && need_node secret-scan; then
+  _env_files="$(cfg_all secretScan.envFile)"
+  [ -n "$_env_files" ] || _env_files=".env"
+  SECRET_SCAN_ENV_FILES="${SECRET_SCAN_ENV_FILES-$_env_files}" \
+  SECRET_SCAN_EXTRA_PATTERNS="${SECRET_SCAN_EXTRA_PATTERNS-$(cfg_all secretScan.pattern)}" \
+  SECRET_SCAN_IGNORE_PATHS="${SECRET_SCAN_IGNORE_PATHS-$(cfg_all secretScan.ignorePath)}" \
+    node "$LIB/secret-scan.mjs" || exit 1
+fi
+
+# ── shrink-only ratchet ────────────────────────────────────────────────────────────────────
+_ratchet_files="$(cfg_all ratchet.file)"
+if [ -n "$_ratchet_files" ] && ! skipped ratchet; then
+  # shellcheck source=lib/ratchet.sh
+  . "$LIB/ratchet.sh"
+  _rfiles=(); IFS=$'\n' read -r -d '' -a _rfiles <<< "$_ratchet_files" || true   # lines → array (bash 3.2: no mapfile)
+  run_ratchet "$(cfg_get ratchet.hint "")" ${_rfiles[@]+"${_rfiles[@]}"} || exit 1
+fi
+
+# ── stale-copy revert guard ────────────────────────────────────────────────────────────────
+if [ "$(cfg_bool staleRevert.enabled true)" = "true" ] && ! skipped stale-revert && need_node stale-revert; then
+  STALE_GUARD_WINDOW_HOURS="${STALE_GUARD_WINDOW_HOURS-$(cfg_get staleRevert.windowHours "")}" \
+  STALE_GUARD_RATIO="${STALE_GUARD_RATIO-$(cfg_get staleRevert.ratio "")}" \
+  STALE_GUARD_MIN_LINES="${STALE_GUARD_MIN_LINES-$(cfg_get staleRevert.minLines "")}" \
+  STALE_GUARD_SMALL_WINDOW_MIN="${STALE_GUARD_SMALL_WINDOW_MIN-$(cfg_get staleRevert.smallWindowMinutes "")}" \
+  STALE_GUARD_SKIP_PATHS="${STALE_GUARD_SKIP_PATHS-$(cfg_all staleRevert.skipPath)}" \
+    node "$LIB/stale-revert-guard.mjs" || exit 1
+fi
+
+# ── migration-number collisions ────────────────────────────────────────────────────────────
+_mig_dirs="$(cfg_all migrations.dir)"
+if [ -n "$_mig_dirs" ] && ! skipped migrations; then
+  # shellcheck source=lib/migration-numbers.sh
+  . "$LIB/migration-numbers.sh"
+  _mdirs=(); IFS=$'\n' read -r -d '' -a _mdirs <<< "$_mig_dirs" || true   # lines → array (bash 3.2: no mapfile)
+  _touched=0
+  for _d in ${_mdirs[@]+"${_mdirs[@]}"}; do
+    if printf '%s\n' "$STAGED" | grep -q "^${_d%/}/"; then _touched=1; fi
+  done
+  if [ "$_touched" = 1 ]; then run_migration_numbers ${_mdirs[@]+"${_mdirs[@]}"} || exit 1; fi
+fi
+
+# ── staged-only typecheck (opt-in, slow) ───────────────────────────────────────────────────
+_tc_projects="$(cfg_all typecheck.project)"
+if [ -n "$_tc_projects" ] && [ -z "${SKIP_TYPECHECK:-}" ] && ! skipped typecheck && [ -n "$STAGED" ]; then
+  # shellcheck source=lib/typecheck-staged.sh
+  . "$LIB/typecheck-staged.sh"
+  TC_CMD="${TYPECHECK_CMD:-$(cfg_get typecheck.command "npx --no-install tsc")}"
+  TC_EXCLUDES="$(cfg_all typecheck.exclude)"
+  _failed=0
+  _tprojects=(); IFS=$'\n' read -r -d '' -a _tprojects <<< "$_tc_projects" || true   # lines → array (bash 3.2: no mapfile)
+  for _p in ${_tprojects[@]+"${_tprojects[@]}"}; do
+    _pdir="$(dirname "$_p")"
+    if [ "$_pdir" = "." ] || printf '%s\n' "$STAGED" | grep -q "^$_pdir/"; then
+      tc_check_project "$_p" || _failed=1
+    fi
+  done
+  if [ "$_failed" -ne 0 ]; then
+    echo ""
+    echo "Fix the errors above, or SKIP_TYPECHECK=1 git commit … if you are deliberately landing"
+    echo "work-in-progress (the fast guards still run)."
+    exit 1
+  fi
+fi
+
+chain_local_hook pre-commit "$@"

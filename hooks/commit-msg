@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# git-safety-hooks — commit-msg
+#
+# OPT-IN (`trailer.enabled = true`): stamp every commit with WHICH TOOL made it, as a trailer:
+#   Agent: claude-code|cursor|codex|human|unknown      (see lib/agent-detect.sh)
+# With several humans and AI agents committing under one git identity, the log otherwise has no
+# way to say which tool produced a commit. The trailer key is `trailer.key` (default "Agent").
+#
+# Idempotent (an existing trailer with that key is left alone, so amend/rebase never doubles it),
+# skips merge commits (their subject is git-generated), and never blocks a commit.
+set -eu
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB="$HOOK_DIR/lib"
+# shellcheck source=lib/config.sh
+. "$LIB/config.sh"
+
+MSG_FILE="${1:-}"
+if [ -n "$MSG_FILE" ] && [ -f "$MSG_FILE" ] && [ "$(cfg_bool trailer.enabled false)" = "true" ] \
+   && ! skipped trailer && command -v node >/dev/null 2>&1; then
+  GITDIR="$(git rev-parse --git-dir 2>/dev/null || true)"
+  if ! { [ -n "$GITDIR" ] && [ -f "$GITDIR/MERGE_HEAD" ]; } && ! head -n1 "$MSG_FILE" | grep -q '^Merge '; then
+    # shellcheck source=lib/agent-detect.sh
+    . "$LIB/agent-detect.sh"
+    node "$LIB/stamp-trailer.mjs" "$MSG_FILE" "$(cfg_get trailer.key Agent)" "$(detect_agent)" || true
+  fi
+fi
+
+chain_local_hook commit-msg "$@"

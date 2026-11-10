@@ -1,0 +1,22 @@
+# Hooks for the pre-commit framework (https://pre-commit.com). Each runs the same dispatcher as a
+# plain install and reads the same .git-safety.conf. Requires node on PATH.
+- id: git-safety-pre-commit
+  name: git-safety-hooks (secret scan, stale-revert guard, ratchet, …)
+  entry: hooks/pre-commit
+  language: script
+  pass_filenames: false
+  always_run: true
+  stages: [pre-commit]
+- id: git-safety-commit-msg
+  name: git-safety-hooks (Agent trailer)
+  entry: hooks/commit-msg
+  language: script
+  always_run: true
+  stages: [commit-msg]
+- id: git-safety-pre-push
+  name: git-safety-hooks (push guard)
+  entry: hooks/pre-push
+  language: script
+  pass_filenames: false
+  always_run: true
+  stages: [pre-push]

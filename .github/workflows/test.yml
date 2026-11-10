@@ -1,0 +1,41 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['18', '22']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Show tool versions
+        run: |
+          bash --version | head -1
+          git --version
+          node --version
+      - name: Run test suite
+        run: make test
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -x -S warning install.sh hooks/pre-commit hooks/commit-msg hooks/pre-push hooks/lib/*.sh test/*.sh
+      - name: node --check
+        run: for f in hooks/lib/*.mjs; do node --check "$f"; done
