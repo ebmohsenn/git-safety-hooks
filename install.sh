@@ -16,7 +16,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-MODE=link; FORCE=0; CONFIG=0; REPO="."
+MODE="link"; FORCE=0; CONFIG=0; REPO="."
 while [ $# -gt 0 ]; do
   case "$1" in
     --vendor) MODE=vendor ;;
