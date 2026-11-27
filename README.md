@@ -12,9 +12,12 @@ an ordinary team.
   bypassed with `--no-verify`, and then it protects nothing.
 - **Diff-only.** Checks look only at what *this* commit stages, so you never need a baseline
   file and never get blocked by existing debt.
-- **Honest about bypasses.** Every block names a one-off override, and the override is printed.
-- **Fail open on their own bugs.** An internal error in a check is reported and does not block
-  the commit.
+- **Honest about bypasses.** Every block names a one-off override, and every override and skip is
+  printed when it is used.
+- **Never silent about what did not run.** If the secret scan or the typecheck cannot run, the
+  commit is refused and the message names the way past, because "could not check" must not look
+  like "checked and clean". The stale-revert guard is a heuristic and steps aside on its own
+  errors, with a warning.
 - **Small dependency footprint:** `git`, `bash` (3.2+, so the macOS default works) and Node.js >= 18.
   Linux and macOS.
 
@@ -38,20 +41,47 @@ Scans only the **added** lines of the staged diff (`git diff --cached -U0`). It 
 
 1. **Live values.** Every secret-looking value in your local, uncommitted env file(s) (default
    `.env`) is hashed with SHA-256 once at start. Every token of every added line is hashed and
-   compared against those hashes. This catches *your actual* database password even when it
-   doesn't match any known format. Values that are clearly not secrets are skipped: short values,
-   numbers, booleans, plain words, paths, e-mail addresses, URLs without credentials, and names
-   like `*_ID`, `PUBLIC*`, `VITE_*`, `NEXT_PUBLIC_*`.
-2. **Key formats.** AWS access key, PEM private-key block, GitHub token, Anthropic / OpenAI /
-   OpenRouter key, Google API key and OAuth client secret, Slack token, Telegram bot token,
-   Stripe live key, a database URL with a real password, a 64-hex or long base64 value assigned
-   to a `*SECRET*`/`*TOKEN*`/`*PASSWORD*`/`*API_KEY*` name, plus any patterns you add.
-3. **File names.** `.env*` (except `.env.example|sample|template`), `*.pem`, `*.p12`, `*.pfx`,
-   `*.jks`, `*.keystore`, `id_rsa`/`id_ed25519`/`id_ecdsa`, `keystore.properties`,
-   `google-service-account*.json`, `*credentials*.json`. This also covers binary files.
+   compared against those hashes. A value that contains quotes, brackets, commas or spaces can
+   never be a single token, so those values are also searched for as plain substrings. This
+   catches *your actual* database password even when it doesn't match any known format. Values
+   are held in memory only and never printed. Values that are clearly not secrets are skipped:
+   short values, numbers, booleans, plain words, paths, e-mail addresses, URLs without
+   credentials (a webhook URL with a token in it is kept), and names like `*_ID`, `PUBLIC*`,
+   `VITE_*`, `NEXT_PUBLIC_*`. An inline `# comment` after a value is not part of the value.
+2. **Key formats.** AWS access key, PEM private-key block, GitHub / GitLab / npm / Hugging Face
+   token, Anthropic / OpenAI / OpenRouter key, Google API key and OAuth client secret, Slack bot
+   and app tokens, Telegram bot token, Stripe live key and webhook secret, SendGrid key, an
+   `_authToken=` line as found in `.npmrc`, a database URL or an `http(s)://user:password@` URL
+   with a real password, a generated-looking value (32+ hex, or long base64) assigned to a name
+   containing `secret`, `token`, `password`, `api_key` and the like in any case (`JWT_SECRET=`,
+   `"client_secret":`, `apiKey =`), plus any patterns you add.
+3. **File names.** `.env`, `.env.<anything>`, `<anything>.env`, `.envrc`, `.netrc`, `*.pem`,
+   `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.tfstate`, `id_rsa` / `id_dsa` /
+   `id_ed25519` / `id_ecdsa`, `keystore.properties`, `google-service-account*.json`,
+   `*credentials*.json`. This also covers binary and empty files. Templates are not refused:
+   `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, `.env.defaults`,
+   `.env.<x>.example`, `example.env`. If your repository commits one of the refused names on
+   purpose (a `.envrc` that only says `use flake`, a Keynote `deck.key`), list it under
+   `secretScan.allowName`: that skips the name check for that path, and its contents are still
+   scanned.
 
 Placeholders are ignored: `example`, `your-…`, `xxxx`, `changeme`, `<token>`, `${VAR}`,
-`process.env…`, and low-variety fixtures like `sk-ant-api03-000…`.
+`process.env…`, low-variety fixtures like `sk-ant-api03-000…`, and the passwords documentation
+uses in connection strings (`password`, `postgres`, `mysecretpassword`, `test…`). A short
+password in a URL that points at `localhost` is treated as a throwaway development database.
+
+**What your git settings cannot change.** The scanner pins everything it parses on its own
+command line. `diff.noprefix`, `diff.mnemonicPrefix` and `core.quotePath` have no effect on it; a
+`-diff` or `binary` attribute in `.gitattributes` does not hide a text file (every file is diffed
+with `--text`); file names with spaces, quotes or non-ASCII characters are scanned like any
+other; and the diff is streamed, so a very large commit is scanned in full. A file whose added
+lines contain a NUL byte is treated as binary data and only its first megabyte is scanned, which
+means UTF-16 text is **not** covered.
+
+**If the scan cannot run** (git fails, an internal error), the commit is refused.
+`SECRET_SCAN_ALLOW_ON_ERROR=1 git commit …` is the way past that one case. A configured pattern
+that is not a valid regex, or that takes too long, is dropped with a warning and the rest of the
+scan goes on.
 
 ```text
 ✖ commit blocked: this commit adds what looks like a secret (the value is not shown):
@@ -124,6 +154,14 @@ things that a plain `tsc` hook lacks:
 
 `SKIP_TYPECHECK=1 git commit …` skips the typecheck for one commit, and the fast checks still run.
 
+The compiler is `npx --no-install tsc` unless you set another one **on your machine**:
+`git config safety.typecheck.command '<command>'`, or `TYPECHECK_CMD` in the environment. It is
+never read from the committed `.git-safety.conf`, because it is a command line that gets run. If
+the compiler cannot run at all (dependencies not installed, a broken command), nothing was
+checked, and the commit is refused with a message that says so. The compiler reads your working
+tree, so a partially staged file is checked as it is on disk; "staged-only" describes which files
+can block the commit.
+
 ### fix-perms (optional)
 
 git records only the executable bit, so a staged file at mode `0600` is a local detail that git
@@ -137,7 +175,9 @@ the target. This check doesn't block. It runs `chmod g+r,o+r` and tells you.
 For trunk-based repos, and for agents that keep local scratch branches that must never reach the
 remote. Only remote refs that match `pushGuard.allow` (shell globs) can be pushed, and remote refs
 can't be deleted unless `pushGuard.allowDeletes = true`. Override one push with
-`PUSH_GUARD_OVERRIDE=1 git push …`.
+`PUSH_GUARD_OVERRIDE=1 git push …`. If you limit the guard to some remotes with
+`pushGuard.remote`, pushing to such a remote's URL (`git push https://… branch`) is guarded just
+like pushing to its name.
 
 ### Agent trailer (optional)
 
@@ -171,8 +211,11 @@ git add .githooks .git-safety.conf && git commit -m "Add git-safety-hooks"
 git config core.hooksPath .githooks
 ```
 
-`install.sh --uninstall` unsets `core.hooksPath`. The installer won't replace a `core.hooksPath`
-that another tool owns, such as husky, unless you pass `--force`.
+`install.sh --uninstall` unsets `core.hooksPath` when it points at these hooks. The installer
+won't replace, or unset, a `core.hooksPath` that another tool owns, such as husky, unless you pass
+`--force`. `--vendor` never overwrites a file in `.githooks/` that it did not put there: a foreign
+hook stops the install, and a foreign file in `.githooks/lib/` with one of our names is kept as
+`<name>.orig`.
 
 Setting `core.hooksPath` makes git ignore `.git/hooks/`. To make sure nothing is silently lost, any
 executable `.git/hooks/<same-name>` still runs **after** these hooks. To turn that off, set
@@ -202,7 +245,7 @@ run `install.sh` here, because it would take `core.hooksPath` away from husky.
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/ebmohsenn/git-safety-hooks
-    rev: v0.1.0
+    rev: v0.2.0
     hooks:
       - id: git-safety-pre-commit
       - id: git-safety-commit-msg     # only if trailer.enabled
@@ -214,16 +257,42 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre
 ```
 
 The pre-commit framework stashes unstaged changes and leaves the index alone, so these checks see
-exactly what will be committed. Node must be on `PATH`.
+exactly what will be committed. Node must be on `PATH`, and pre-commit must be 3.2.0 or newer.
+
+**The push guard is weaker under the pre-commit framework.** For a push, the framework tells a
+hook about one ref only (the first one it finds something to check for) and nothing about
+deletions. `git push origin main scratch` and `git push origin --delete main` are therefore not
+fully seen by `git-safety-pre-push`. If you rely on the push guard, install it natively
+(`install.sh`, or call `.githooks/pre-push "$@"` from your own hook), where git hands it every
+ref.
 
 ## Configuration
 
-Settings are read, first match wins, from:
+Settings are read from two places:
 
 1. `git config safety.<key>`: per machine or per clone, never committed.
 2. `.git-safety.conf` in the repo root: git-config syntax, committed. Its path can be overridden
-   with `$GIT_SAFETY_CONFIG`. The file is read with `git config -f`, **never sourced**, so it can't
-   execute code.
+   with `$GIT_SAFETY_CONFIG`.
+
+For a single-value key the first place that sets it wins. For a multi-value key (marked *multi*
+below) the values from both places are used together.
+
+**What the committed file can and cannot do.** It is read with `git config -f` and never
+sourced. Whoever can change it (a teammate, a branch you check out, a repository you clone) can
+turn checks on and off and give them patterns, so a change to it deserves the same review as a
+change to CI. It cannot name a program to run: `typecheck.command` is read from `git config`
+only, and no value from the file is ever passed to `sed`, `eval` or a shell-built regex. Two
+things are said out loud whenever they apply: the file switching the secret scan off, and files
+skipped by `secretScan.ignorePath`. If you point a global `core.hooksPath` at these hooks and
+work in repositories you do not trust, note that a committed `typecheck.project` still makes the
+hook run the compiler found in that repository's `node_modules`; set
+`git config --global safety.typecheck.enabled false` and enable it per repository.
+
+**A file git cannot parse is an error**, not an empty file: the hooks stop and show git's
+message, rather than quietly running with every setting at its default. The usual cause is a
+regex: git-config reads a backslash as an escape, so write `\\b` and `\\d`, not `\b` and
+`\d` (`\d` is a syntax error, and `\b` silently becomes a backspace character, which the secret
+scan warns about).
 
 See [`examples/git-safety.conf`](examples/git-safety.conf) for a fully commented file.
 
@@ -232,7 +301,8 @@ See [`examples/git-safety.conf`](examples/git-safety.conf) for a fully commented
 | `secretScan.enabled` | `true` | |
 | `secretScan.envFile` (multi) | `.env` | Local env files whose values are guarded |
 | `secretScan.pattern` (multi) | none | Extra JavaScript regex sources |
-| `secretScan.ignorePath` (multi) | none | JavaScript regex sources of paths that are never scanned |
+| `secretScan.ignorePath` (multi) | none | JavaScript regex sources of paths that are never scanned (counted in the output) |
+| `secretScan.allowName` (multi) | none | JavaScript regex sources of paths exempt from the file-name check; contents are still scanned |
 | `staleRevert.enabled` | `true` | |
 | `staleRevert.windowHours` | `48` | How far back "recent" commits go |
 | `staleRevert.ratio` | `0.9` | Share of a commit's lines that must be inverted |
@@ -244,24 +314,28 @@ See [`examples/git-safety.conf`](examples/git-safety.conf) for a fully commented
 | `migrations.dir` (multi) | none | Migration directories |
 | `typecheck.project` (multi) | none | tsconfig paths. Setting one turns the typecheck on |
 | `typecheck.exclude` (multi) | none | Shell globs of staged paths that need no coverage |
-| `typecheck.command` | `npx --no-install tsc` | Compiler command |
+| `typecheck.command` | `npx --no-install tsc` | Compiler command. **`git config` only**; ignored, with a warning, in the committed file |
+| `typecheck.enabled` | `true` | Set to `false` in `git config` to keep a committed `typecheck.project` from running a compiler |
 | `fixPerms.enabled` | `false` | |
 | `pushGuard.allow` (multi) | none | Remote-ref globs. Setting one turns the guard on |
-| `pushGuard.remote` (multi) | all | Only guard these remotes |
+| `pushGuard.remote` (multi) | all | Only guard these remotes (by name, or by their URL) |
 | `pushGuard.allowDeletes` | `false` | |
 | `trailer.enabled` | `false` | |
-| `trailer.key` | `Agent` | Trailer name |
+| `trailer.key` | `Agent` | Trailer name (letters, digits and dashes) |
 | `chainLocalHooks` | `true` | Also run executable `.git/hooks/<name>` |
 
-**One-off environment overrides** (all printed when used):
+**One-off environment overrides.** Each one prints a line when it takes effect, so a check that
+was skipped never looks like a check that passed.
 
 | Variable | Effect |
 |---|---|
-| `SAFETY_SKIP=secret-scan,stale-revert,…` | Skip the named checks (`all` skips everything) |
+| `SAFETY_SKIP=secret-scan,stale-revert,…` | Skip the named checks (`all` skips everything). Names: `secret-scan`, `stale-revert`, `ratchet`, `migrations`, `typecheck`, `fix-perms`, `push-guard`, `trailer` |
 | `SECRET_SCAN_ALLOW="<why>"` | Allow this commit past the secret scan |
+| `SECRET_SCAN_ALLOW_ON_ERROR=1` | Allow this commit when the secret scan could not run |
 | `ACK_REVERT="<sha or why>"` | Allow a deliberate revert |
 | `RATCHET_OVERRIDE="<why>"` | Allow a ratchet file to grow |
 | `SKIP_TYPECHECK=1` | Skip the typecheck |
+| `TYPECHECK_CMD="<command>"` | Compiler command for this run |
 | `PUSH_GUARD_OVERRIDE=1` | Allow this push |
 | `GIT_AGENT=<name>` | Value of the agent trailer |
 
@@ -283,8 +357,13 @@ index and not the default one.
 - **Ratchet** counts lines, not complexity. It can be gamed by joining lines.
 - **Migrations** reads only the top level of each configured directory, and the numeric prefix
   only.
-- **Typecheck** matches tsc's output by path suffix. Projects that map files through unusual
-  `rootDirs` or symlinks may need `typecheck.exclude`.
+- **The secret scan does not read UTF-16** (or any file with NUL bytes beyond its first
+  megabyte), and it knows the key formats listed above, not every vendor's.
+- **Typecheck** looks for each staged file's absolute path in tsc's `--listFiles` output. Projects
+  that reach files through symlinks inside the repository may need `typecheck.exclude`.
+- **File names that git has to quote** (a double quote, a backslash or a control character in the
+  name) are scanned for secrets, but the checks that work from the list of staged names
+  (typecheck coverage, fix-perms) do not recognise them.
 - **Agent detection** depends on environment variables that each tool sets, and those can change.
 - If `node` is missing, the secret scan and the stale-revert guard print a warning and are
   **skipped**, not enforced.
@@ -295,6 +374,7 @@ index and not the default one.
 ```sh
 make test     # every suite in test/, against throwaway repos in $TMPDIR
 make lint     # shellcheck + node --check
+GSH_TEST_HUGE=1 ./test/run.sh secret-scan   # also stages a 270 MB diff (slow, needs the disk space)
 ```
 
 The suites include **mutation tests**. The secret scanner, the stale-revert guard and the coverage
