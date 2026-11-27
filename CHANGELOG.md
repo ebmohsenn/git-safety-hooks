@@ -120,6 +120,6 @@ developers and AI agents commit concurrently, then generalized.
 - The stale-revert replay test, which used real commits, was replaced by synthetic scenarios that
   run with a fixed clock.
 
-[Unreleased]: https://github.com/ebmohsenn/git-safety-hooks/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/ebmohsenn/git-safety-hooks/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/ebmohsenn/git-safety-hooks/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Ebmohsennn/git-safety-hooks/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Ebmohsennn/git-safety-hooks/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Ebmohsennn/git-safety-hooks/releases/tag/v0.1.0

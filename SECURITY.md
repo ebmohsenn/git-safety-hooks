@@ -4,7 +4,7 @@
 
 Please report security problems privately, not in a public issue: open the repository's
 **Security** tab and choose **Report a vulnerability**
-(<https://github.com/ebmohsenn/git-safety-hooks/security/advisories/new>).
+(<https://github.com/Ebmohsennn/git-safety-hooks/security/advisories/new>).
 
 Include what you found and the smallest repository or command that shows it. You will get an
 acknowledgement within a few days, and credit in the changelog when the fix ships, if you want it.
