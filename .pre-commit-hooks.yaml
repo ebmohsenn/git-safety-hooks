@@ -1,5 +1,8 @@
 # Hooks for the pre-commit framework (https://pre-commit.com). Each runs the same dispatcher as a
 # plain install and reads the same .git-safety.conf. Requires node on PATH.
+# The stage names below (pre-commit, pre-push) exist since pre-commit 3.2.0.
+# Note: for a push the framework reports ONE ref and no deletions, so git-safety-pre-push sees
+# less than a native install does. See the README.
 - id: git-safety-pre-commit
   name: git-safety-hooks (secret scan, stale-revert guard, ratchet, …)
   entry: hooks/pre-commit
@@ -7,12 +10,14 @@
   pass_filenames: false
   always_run: true
   stages: [pre-commit]
+  minimum_pre_commit_version: '3.2.0'
 - id: git-safety-commit-msg
   name: git-safety-hooks (Agent trailer)
   entry: hooks/commit-msg
   language: script
   always_run: true
   stages: [commit-msg]
+  minimum_pre_commit_version: '3.2.0'
 - id: git-safety-pre-push
   name: git-safety-hooks (push guard)
   entry: hooks/pre-push
@@ -20,3 +25,4 @@
   pass_filenames: false
   always_run: true
   stages: [pre-push]
+  minimum_pre_commit_version: '3.2.0'
