@@ -17,7 +17,19 @@ if git commit -q -m "clean" >/dev/null 2>&1; then ok "end-to-end: a clean commit
 
 git config core.hooksPath .husky/_
 if bash "$INSTALL" "$T" >/dev/null 2>&1; then bad "overwrote another hook manager's core.hooksPath without --force"; else ok "refuses to replace a foreign core.hooksPath"; fi
+# --uninstall undoes OUR install only: husky's hooksPath is not ours to unset
+if bash "$INSTALL" --uninstall "$T" >/dev/null 2>&1; then bad "--uninstall claimed success on a foreign core.hooksPath"; else ok "--uninstall leaves a foreign core.hooksPath alone (exit 1)"; fi
+if [ "$(git config core.hooksPath)" = ".husky/_" ]; then ok "the foreign core.hooksPath is still set"; else bad "--uninstall unset another tool's core.hooksPath"; fi
+# --vendor into a .githooks/ that already holds someone else's lib/config.sh: keep theirs
+mkdir -p .githooks/lib; echo "# somebody else's file" > .githooks/lib/config.sh
 bash "$INSTALL" --vendor --force --config "$T" >/dev/null 2>&1 || bad "vendor install failed"
+if [ "$(cat .githooks/lib/config.sh.orig 2>/dev/null)" = "# somebody else's file" ]; then ok "vendor mode: a foreign lib/ file of the same name is kept as .orig"; else bad "vendor mode overwrote a foreign .githooks/lib/config.sh"; fi
+if cmp -s .githooks/lib/config.sh "$HOOKS/lib/config.sh"; then ok "vendor mode: our lib/config.sh is in place"; else bad "vendor mode did not install lib/config.sh"; fi
+rm -f .githooks/lib/config.sh.orig
+# … and a second run (an upgrade of our own copy) does not litter .orig files
+echo "# an older version of ours" >> .githooks/lib/ratchet.sh
+bash "$INSTALL" --vendor "$T" >/dev/null 2>&1 || bad "vendor upgrade failed"
+if [ ! -e .githooks/lib/ratchet.sh.orig ] && cmp -s .githooks/lib/ratchet.sh "$HOOKS/lib/ratchet.sh"; then ok "vendor mode: upgrading our own copy replaces it"; else bad "vendor upgrade left the old file or a stray .orig"; fi
 if [ "$(git config core.hooksPath)" = ".githooks" ] && [ -x .githooks/pre-commit ] && [ -f .githooks/lib/secret-scan.mjs ]; then ok "vendor mode: hooks copied, core.hooksPath=.githooks"; else bad "vendor mode incomplete"; fi
 if [ -f .git-safety.conf ] && git config -f .git-safety.conf --get secretScan.enabled >/dev/null; then ok "--config writes a parseable .git-safety.conf"; else bad "--config did not write a parseable config"; fi
 
@@ -34,5 +46,8 @@ if [ -f "$T/legacy.out" ]; then bad "chainLocalHooks=false still ran the legacy 
 
 bash "$INSTALL" --uninstall "$T" >/dev/null 2>&1
 if git config --get core.hooksPath >/dev/null; then bad "uninstall left core.hooksPath set"; else ok "uninstall unsets core.hooksPath"; fi
+git config core.hooksPath .husky/_
+bash "$INSTALL" --uninstall --force "$T" >/dev/null 2>&1
+if git config --get core.hooksPath >/dev/null; then bad "--uninstall --force left core.hooksPath set"; else ok "--uninstall --force unsets a foreign core.hooksPath"; fi
 
 finish "install"

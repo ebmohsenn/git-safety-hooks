@@ -8,8 +8,11 @@
  * Rules here: the trailer joins an existing trailer block ONLY when the message has >= 2
  * paragraphs and the last one consists solely of well-formed `Token: value` lines (token = no
  * spaces); otherwise a blank line is inserted first. Trailing `#` comment lines (the editor
- * template) stay at the end. Idempotent: nothing is written if a `Key:` trailer already exists
- * in the last paragraph.
+ * template) stay at the end, and so does everything from the scissors line down (`git commit -v`
+ * puts the diff there and cuts it off afterwards — a trailer added below it would be cut too).
+ * Idempotent: nothing is written if a `Key:` trailer already exists in the last paragraph.
+ * The key must be a trailer token and the value a single line; anything else is refused, so a
+ * setting cannot smuggle extra lines into every commit message.
  */
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +23,11 @@ const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Pure: message text → stamped text. */
 export function stamp(text, key, value) {
   const lines = text.split('\n');
+  // everything from the scissors line («# ------------------------ >8 ------------------------»,
+  // whatever the comment character) is not part of the message
+  const scissors = lines.findIndex((l) => /^. -{24} >8 -{24}$/.test(l));
   // peel the trailing comment/blank tail (editor template), keep it verbatim
-  let end = lines.length;
+  let end = scissors >= 0 ? scissors : lines.length;
   while (end > 0 && (lines[end - 1].startsWith('#') || lines[end - 1].trim() === '')) end--;
   const body = lines.slice(0, end);
   const tail = lines.slice(end);
@@ -45,7 +51,11 @@ function isMain() {
 if (isMain()) {
   const [file, key, value] = process.argv.slice(2);
   try {
-    if (file && key && value) {
+    if (file && key && value && !/^[A-Za-z][A-Za-z0-9-]*$/.test(key)) {
+      console.error(`⚠️  stamp-trailer skipped: trailer.key must be letters, digits and dashes (got ${JSON.stringify(key).slice(0, 60)})`);
+    } else if (file && key && value && /[\r\n\0]/.test(value)) {
+      console.error('⚠️  stamp-trailer skipped: the agent name must be a single line');
+    } else if (file && key && value) {
       const src = fs.readFileSync(file, 'utf8');
       const res = stamp(src, key, value);
       if (res !== src) fs.writeFileSync(file, res);

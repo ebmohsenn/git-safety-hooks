@@ -65,6 +65,28 @@ commit_at $((NOW - 300)) "fix: C tweaks a and b"
 stage_reset; put_rev HEAD~1 a.ts; put_rev HEAD~1 b.ts
 run_guard 1 "small x2 within 30 min" "fix: C tweaks a and b"
 
+# The user's git config changes diff headers (c/ i/ instead of a/ b/, or none): same verdict.
+fresh
+body base 20 > svc.ts; commit_at $((NOW - 10*H)) "base"
+{ body base 10; body featA 8; body base 20 | sed -n '14,20p'; } > svc.ts; commit_at $((NOW - 2*H)) "feat: session A reworks svc"
+stage_reset; put_rev HEAD~1 svc.ts
+git config diff.mnemonicPrefix true
+run_guard 1 "strong, with diff.mnemonicPrefix=true" "feat: session A reworks svc"
+git config --unset diff.mnemonicPrefix; git config diff.noprefix true
+run_guard 1 "strong, with diff.noprefix=true" "feat: session A reworks svc"
+git config --unset diff.noprefix
+
+# A path containing a space (git writes a TAB after it in the header) or pathspec magic characters.
+fresh
+body base 20 > "my svc.ts"; body base 20 > "a[1].ts"; commit_at $((NOW - 10*H)) "base"
+{ body base 10; body featA 8; body base 20 | sed -n '14,20p'; } > "my svc.ts"
+{ body base 10; body featB 8; body base 20 | sed -n '14,20p'; } > "a[1].ts"
+commit_at $((NOW - 2*H)) "feat: session A reworks two awkwardly named files"
+stage_reset; put_rev HEAD~1 "my svc.ts"
+run_guard 1 "strong: a file name with a space" "my svc.ts"
+stage_reset; put_rev HEAD~1 "a[1].ts"
+run_guard 1 "strong: a file name with glob characters" "a[1].ts"
+
 echo "— must stay quiet —"
 
 # 7. Same small change, but it landed 2 h ago: too small to be evidence outside the short window.

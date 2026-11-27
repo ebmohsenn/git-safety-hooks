@@ -28,6 +28,14 @@ expect "editor comment template stays at the end" \
   $'feat: x\n\nAgent: claude-code\n\n# Please enter the commit message\n# Lines starting with # are ignored\n'
 expect "empty message is left alone" $'\n# only comments\n' $'\n# only comments\n'
 expect "custom key" $'fix: y\n' $'fix: y\n\nTool: cursor\n' Tool cursor
+# `git commit -v`: the message file ends with a scissors line and the diff, which git cuts off —
+# a trailer appended at the very end would be cut off with it
+SC='# ------------------------ >8 ------------------------'
+expect "commit -v: the trailer goes ABOVE the scissors line" \
+  "fix: verbose"$'\n\n'"# Please enter the commit message"$'\n'"$SC"$'\n'"# Do not modify or remove the line above."$'\n'"diff --git a/x b/x"$'\n'"+added"$'\n' \
+  "fix: verbose"$'\n\n'"Agent: claude-code"$'\n\n'"# Please enter the commit message"$'\n'"$SC"$'\n'"# Do not modify or remove the line above."$'\n'"diff --git a/x b/x"$'\n'"+added"$'\n'
+expect "a trailer key that is not a trailer token is refused" $'fix: z\n' $'fix: z\n' $'Agent: x\nSigned-off-by: someone' codex 2>/dev/null
+expect "an agent name with a newline in it is refused" $'fix: z\n' $'fix: z\n' Agent $'codex\nReviewed-by: nobody' 2>/dev/null
 
 # through the real hook
 cp -R "$HOOKS" .githooks; git config core.hooksPath .githooks
@@ -48,6 +56,22 @@ git config safety.agent ci-bot
 git commit -q -m "fourth" </dev/null
 if [ "$(git log -1 --format='%(trailers:key=Agent,valueonly)' | head -1)" = "ci-bot" ]; then ok "git config safety.agent is used"; else bad "safety.agent ignored: $(git log -1 --format=%B)"; fi
 git config --unset safety.agent
+
+# end to end with `git commit -v` and an editor that keeps git's template as it is
+cat > "$T/editor.sh" <<'E'
+#!/bin/sh
+{ echo "fifth, written in an editor"; cat "$1"; } > "$1.new" && mv "$1.new" "$1"
+E
+chmod +x "$T/editor.sh"
+echo e > e.txt; git add e.txt
+GIT_AGENT=codex GIT_EDITOR="$T/editor.sh" git commit -q -v </dev/null >/dev/null 2>&1
+if [ "$(git log -1 --format='%(trailers:key=Agent,valueonly)' | head -1)" = "codex" ]; then ok "git commit -v keeps the trailer"; else bad "git commit -v lost the trailer: $(git log -1 --format=%B)"; fi
+
+# an invalid .git-safety.conf is reported by commit-msg but never blocks there (pre-commit does that)
+printf '[secretScan]\n\tpattern = \\dfoo\n' > .git-safety.conf
+echo f > f.txt; git add f.txt
+if out="$(GIT_AGENT=codex git commit -q --no-verify -m "sixth" 2>&1)"; then ok "commit-msg does not block on an invalid config file"; else bad "commit-msg blocked: $out"; fi
+rm -f .git-safety.conf
 
 # merges are not stamped
 git checkout -q -b side; echo s > s.txt; git add s.txt; GIT_AGENT=x git commit -q -m "side"

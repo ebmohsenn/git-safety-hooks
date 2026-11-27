@@ -9,10 +9,12 @@
 #   --vendor     copy hooks/ into <repo>/.githooks/ and set core.hooksPath=.githooks (relative).
 #                Commit .githooks/ so the whole team runs the same version; each clone still
 #                needs `git config core.hooksPath .githooks` once (git never auto-enables hooks).
-#   --uninstall  unset core.hooksPath (vendored files are left in place for you to delete).
+#   --uninstall  unset core.hooksPath, if it points at these hooks (vendored files are left in
+#                place for you to delete). A core.hooksPath that belongs to another tool is left alone.
 # Options:
 #   --config     also write a commented .git-safety.conf into the repo (if absent)
-#   --force      replace an existing, different core.hooksPath (e.g. husky's .husky/_)
+#   --force      replace an existing, different core.hooksPath (e.g. husky's .husky/_); with
+#                --uninstall, unset core.hooksPath whatever it points at
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -33,9 +35,26 @@ done
 ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null)" || { echo "install.sh: $REPO is not inside a git repository" >&2; exit 2; }
 CURRENT="$(git -C "$ROOT" config --get core.hooksPath 2>/dev/null || true)"
 
+# ours <dir> — true when <dir> (as core.hooksPath is spelled) holds these hooks.
+ours() {
+  local d="$1"
+  [ -n "$d" ] || return 1
+  [ "$d" = "$HERE/hooks" ] && return 0
+  case "$d" in /*) ;; *) d="$ROOT/$d" ;; esac
+  [ -f "$d/pre-commit" ] && grep -q 'git-safety-hooks' "$d/pre-commit" 2>/dev/null
+}
+
 if [ "$MODE" = uninstall ]; then
+  if [ -z "$CURRENT" ]; then echo "✓ core.hooksPath is not set in $ROOT — nothing to do"; exit 0; fi
+  # Only undo what this installer did: unsetting husky's or lefthook's hooksPath would silently
+  # switch off someone else's hooks.
+  if ! ours "$CURRENT" && [ "$FORCE" != 1 ]; then
+    echo "install.sh: core.hooksPath is '$CURRENT' in $ROOT, which is not git-safety-hooks — left alone." >&2
+    echo "  Re-run with --uninstall --force to unset it anyway." >&2
+    exit 1
+  fi
   git -C "$ROOT" config --unset core.hooksPath 2>/dev/null || true
-  echo "✓ core.hooksPath unset in $ROOT (was: ${CURRENT:-<unset>})"
+  echo "✓ core.hooksPath unset in $ROOT (was: $CURRENT)"
   exit 0
 fi
 
@@ -49,15 +68,29 @@ if [ -n "$CURRENT" ] && [ "$CURRENT" != "$TARGET" ] && [ "$FORCE" != 1 ]; then
 fi
 
 if [ "$MODE" = vendor ]; then
-  mkdir -p "$ROOT/.githooks/lib"
+  # Is there already a copy of these hooks here (an upgrade), or is .githooks/ someone else's?
+  UPGRADE=0
   for h in pre-commit commit-msg pre-push; do
-    if [ -e "$ROOT/.githooks/$h" ] && ! grep -q 'git-safety-hooks' "$ROOT/.githooks/$h"; then
-      echo "install.sh: $ROOT/.githooks/$h exists and is not ours — not overwriting (move it aside first)." >&2
-      exit 1
+    if [ -e "$ROOT/.githooks/$h" ]; then
+      if grep -q 'git-safety-hooks' "$ROOT/.githooks/$h"; then UPGRADE=1
+      else
+        echo "install.sh: $ROOT/.githooks/$h exists and is not ours — not overwriting (move it aside first)." >&2
+        exit 1
+      fi
     fi
   done
+  mkdir -p "$ROOT/.githooks/lib"
+  # lib/ files carry plain names (config.sh …). On an upgrade they are our own older copies; in a
+  # .githooks/ that was not ours, a different file of the same name is someone else's: keep it.
+  for src in "$HERE"/hooks/lib/*; do
+    dst="$ROOT/.githooks/lib/$(basename "$src")"
+    if [ "$UPGRADE" = 0 ] && [ -e "$dst" ] && ! cmp -s "$src" "$dst"; then
+      mv "$dst" "$dst.orig"
+      echo "  note: existing $dst kept as $(basename "$dst").orig"
+    fi
+    cp "$src" "$dst"
+  done
   cp "$HERE"/hooks/pre-commit "$HERE"/hooks/commit-msg "$HERE"/hooks/pre-push "$ROOT/.githooks/"
-  cp "$HERE"/hooks/lib/* "$ROOT/.githooks/lib/"
   chmod +x "$ROOT/.githooks/pre-commit" "$ROOT/.githooks/commit-msg" "$ROOT/.githooks/pre-push"
 fi
 

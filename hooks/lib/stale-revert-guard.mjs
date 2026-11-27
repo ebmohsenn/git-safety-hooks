@@ -63,6 +63,32 @@ export function isTrivial(line) {
   return !/[\p{L}\p{N}]{3,}/u.test(t);
 }
 
+/** Undo git's C-style quoting of a path («"a\"b"»); an unquoted path is returned as is. */
+function unquotePath(s) {
+  if (s.length < 2 || s[0] !== '"' || s[s.length - 1] !== '"') return s;
+  const ESC = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11 };
+  const body = s.slice(1, -1);
+  const parts = [];
+  let i = 0;
+  let start = 0;
+  while (i < body.length) {
+    if (body[i] !== '\\') { i++; continue; }
+    if (i > start) parts.push(Buffer.from(body.slice(start, i)));
+    const oct = body.slice(i + 1, i + 4);
+    if (/^[0-7]{3}$/.test(oct)) { parts.push(Buffer.from([parseInt(oct, 8)])); i += 4; }
+    else { const c = body[i + 1] ?? ''; parts.push(c in ESC ? Buffer.from([ESC[c]]) : Buffer.from(c)); i += 2; }
+    start = i;
+  }
+  if (start < body.length) parts.push(Buffer.from(body.slice(start)));
+  return Buffer.concat(parts).toString('utf8');
+}
+/** The path on a «--- a/x» / «+++ b/x» line: git appends a TAB after a name that contains a space, and
+ *  quotes a name that contains a quote, a backslash or a control character. */
+const headerPath = (text, prefix) => {
+  const p = unquotePath(text.replace(/\t$/, ''));
+  return p.startsWith(prefix) ? p.slice(prefix.length) : p;
+};
+
 /**
  * Parse a `-U0 --no-renames` patch stream into [{commit, time, subject, files: Map(path → {added, removed})}].
  * `\x01C <sha> <epoch> <subject>` marker lines (from --format) start a new commit; a plain diff is one
@@ -94,12 +120,12 @@ export function parsePatchStream(text) {
     if (inHeader) {
       if (raw.startsWith('--- ')) {
         const p = raw.slice(4);
-        if (p !== '/dev/null') file = p.replace(/^a\//, '');
+        if (p !== '/dev/null') file = headerPath(p, 'a/');
         continue;
       }
       if (raw.startsWith('+++ ')) {
         const p = raw.slice(4);
-        if (p !== '/dev/null') file = p.replace(/^b\//, '');
+        if (p !== '/dev/null') file = headerPath(p, 'b/');
         if (file && !cur.files.has(file)) cur.files.set(file, { added: [], removed: [] });
         continue;
       }
@@ -170,8 +196,10 @@ export function findReverts(staged, recent, now = Math.floor(Date.now() / 1000),
   return verdicts;
 }
 
+// --literal-pathspecs: the staged paths are handed back to `git log` as pathspecs, and a file called
+// «a[1].ts» or «:(top)x» must mean that file, not a pattern.
 function git(args, opts = {}) {
-  return execFileSync('git', ['-c', 'core.quotepath=off', ...args], {
+  return execFileSync('git', ['--literal-pathspecs', '-c', 'core.quotepath=off', ...args], {
     encoding: 'utf8',
     maxBuffer: 256 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore'],
@@ -207,7 +235,10 @@ function main() {
   }
   const now = num(process.env.STALE_GUARD_NOW, 0) || Math.floor(Date.now() / 1000);
 
-  const diffText = git(['diff', '--cached', '--no-color', '--no-ext-diff', '--no-renames', '-U0', '--diff-filter=MD', base]);
+  // The parser strips «a/» and «b/»: pin them, or diff.mnemonicPrefix / diff.noprefix in the user's
+  // config changes every path and the guard never finds the file in the log.
+  const PREFIXES = ['--src-prefix=a/', '--dst-prefix=b/'];
+  const diffText = git(['diff', '--cached', '--no-color', '--no-ext-diff', '--no-renames', '-U0', ...PREFIXES, '--diff-filter=MD', base]);
   if (!diffText) return 0;
   const staged = new Map();
   for (const [path, d] of parsePatchStream(diffText)[0]?.files ?? []) {
@@ -218,7 +249,7 @@ function main() {
 
   const since = new Date((now - opts.windowSeconds) * 1000).toISOString();
   const logText = git([
-    'log', base, `--since=${since}`, '--no-merges', '--no-color', '--no-ext-diff', '--no-renames', '-U0',
+    'log', base, `--since=${since}`, '--no-merges', '--no-color', '--no-ext-diff', '--no-renames', '-U0', ...PREFIXES,
     `--max-count=${MAX_LOG_COMMITS}`, '--format=%x01C %H %ct %s', '--', ...staged.keys(),
   ]);
   const recent = parsePatchStream(logText).filter((b) => b.commit && b.time >= now - opts.windowSeconds);
