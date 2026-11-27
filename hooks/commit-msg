@@ -13,7 +13,7 @@ set -eu
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 LIB="$HOOK_DIR/lib"
 # shellcheck source=lib/config.sh
-. "$LIB/config.sh"
+SAFETY_CONF_NONFATAL=1 . "$LIB/config.sh"
 
 MSG_FILE="${1:-}"
 if [ -n "$MSG_FILE" ] && [ -f "$MSG_FILE" ] && [ "$(cfg_bool trailer.enabled false)" = "true" ] \

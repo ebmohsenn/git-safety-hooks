@@ -13,19 +13,31 @@
 # shape a fresh collision always has. Note the check is "is it in HEAD", not "is it tracked": the
 # new file is already in the index when the hook runs.
 #
+# _migration_files <dir> — the names directly inside <dir>, read from the index.
+# The directory name is a setting, so it is only ever used as a literal: a literal pathspec and a
+# literal prefix strip. It is never spliced into a sed program or a regex.
+# core.quotePath=off: otherwise a non-ASCII name comes back quoted and its number is not seen.
+_migration_files() {
+  local dir="$1" p
+  git --literal-pathspecs -c core.quotePath=off ls-files -- "$dir/" 2>/dev/null | while IFS= read -r p; do
+    p="${p#"$dir"/}"
+    case "$p" in */*) ;; *) printf '%s\n' "$p" ;; esac
+  done
+}
+
 # run_migration_numbers <dir>…   exit 1 = blocked
 run_migration_numbers() {
   local bad=0 dir files dupes n f
   for dir in "$@"; do
     dir="${dir%/}"
-    files="$(git ls-files -- "$dir/" 2>/dev/null | sed "s|^$dir/||" | grep -v / || true)"
+    files="$(_migration_files "$dir")"
     [ -n "$files" ] || continue
     dupes="$(printf '%s\n' "$files" | sed -n 's/^\([0-9][0-9]*\).*/\1/p' | sed 's/^0*\([0-9]\)/\1/' | sort -n | uniq -d)"
     for n in $dupes; do
       local members="" live=0
       while IFS= read -r f; do
         [ -n "$f" ] || continue
-        members="${members}      $f\n"
+        members="${members}      $f"$'\n'
         git cat-file -e "HEAD:$dir/$f" >/dev/null 2>&1 || live=1
       done <<EOF
 $(printf '%s\n' "$files" | grep -E "^0*${n}([^0-9]|\$)")
@@ -33,7 +45,7 @@ EOF
       if [ "$live" = 1 ]; then
         [ "$bad" = 0 ] && echo "✖ commit blocked: duplicate migration numbers:"
         echo "  $dir: $n"
-        printf "%b" "$members"
+        printf '%s' "$members"
         bad=1
       fi
     done

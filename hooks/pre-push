@@ -21,26 +21,44 @@ LIB="$HOOK_DIR/lib"
 . "$LIB/config.sh"
 
 REMOTE_NAME="${1:-${PRE_COMMIT_REMOTE_NAME:-}}"
+REMOTE_URL="${2:-${PRE_COMMIT_REMOTE_URL:-}}"
 INPUT="$(cat)"
 # Under the pre-commit framework there is no stdin; it describes the push in env vars instead.
 if [ -z "$INPUT" ] && [ -n "${PRE_COMMIT_REMOTE_BRANCH:-}" ]; then
   INPUT="${PRE_COMMIT_LOCAL_BRANCH:-HEAD} ${PRE_COMMIT_TO_REF:-HEAD} $PRE_COMMIT_REMOTE_BRANCH ${PRE_COMMIT_FROM_REF:-}"
 fi
 
+# guarded_remote — true when this push goes to a remote listed in pushGuard.remote. `git push
+# <url> …` hands the hook the URL in place of a name, so a listed remote's URL counts as that
+# remote; otherwise pushing to origin's URL instead of "origin" would walk past the guard.
+guarded_remote() {
+  local remotes="$1" r u
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$r" = "$REMOTE_NAME" ] && return 0
+    while IFS= read -r u; do
+      [ -n "$u" ] || continue
+      if [ "$u" = "$REMOTE_NAME" ] || [ "$u" = "$REMOTE_URL" ]; then return 0; fi
+    done <<EOF
+$(git remote get-url --all "$r" 2>/dev/null || true; git remote get-url --push --all "$r" 2>/dev/null || true)
+EOF
+  done <<EOF
+$remotes
+EOF
+  return 1
+}
+
 guard() {
-  [ "${PUSH_GUARD_OVERRIDE:-}" = "1" ] && return 0
-  skipped push-guard && return 0
-  local allow remotes r ok
+  local allow remotes
   allow="$(cfg_all pushGuard.allow)"
   [ -n "$allow" ] || return 0
   remotes="$(cfg_all pushGuard.remote)"
-  if [ -n "$remotes" ]; then
-    ok=0
-    while IFS= read -r r; do [ "$r" = "$REMOTE_NAME" ] && ok=1; done <<EOF
-$remotes
-EOF
-    [ "$ok" = 1 ] || return 0
+  if [ -n "$remotes" ]; then guarded_remote "$remotes" || return 0; fi
+  if [ "${PUSH_GUARD_OVERRIDE:-}" = "1" ]; then
+    echo "⚠️  git-safety-hooks: push guard overridden — PUSH_GUARD_OVERRIDE=1" >&2
+    return 0
   fi
+  skipped push-guard && return 0
   local allow_deletes bad=0 local_ref local_sha remote_ref pat matched
   allow_deletes="$(cfg_bool pushGuard.allowDeletes false)"
   while read -r local_ref local_sha remote_ref _; do

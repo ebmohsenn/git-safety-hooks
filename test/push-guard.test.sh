@@ -7,12 +7,18 @@ new_repo
 Z=0000000000000000000000000000000000000000
 A=1111111111111111111111111111111111111111
 
-push() { # push <want> <name> <remote-name> <stdin> [ENV=VAL…]
+URL="https://example.invalid/repo.git"
+LAST=""
+push() { # push <want> <name> <remote-name|url> <stdin> [ENV=VAL…]
   local want="$1" name="$2" remote="$3" input="$4"; shift 4
-  local got=0 out
-  out="$(printf '%s\n' "$input" | env "$@" bash "$HOOKS/pre-push" "$remote" "https://example.invalid/repo.git" 2>&1)" || got=$?
+  # git passes <name> <url>; for `git push <url> …` it passes the URL twice
+  local got=0 out url="$URL"
+  case "$remote" in *://*) url="$remote" ;; esac
+  out="$(printf '%s\n' "$input" | env "$@" bash "$HOOKS/pre-push" "$remote" "$url" 2>&1)" || got=$?
   if [ "$got" = "$want" ]; then ok "$name (exit $got)"; else bad "$name (exit $got, wanted $want)"; printf '%s\n' "$out" | sed 's/^/     /'; fi
+  LAST="$out"
 }
+has() { if grep -qF -- "$1" <<<"$LAST"; then ok "  says: $1"; else bad "  output lacks: $1"; printf '%s\n' "$LAST" | sed 's/^/     /'; fi; }
 
 push 0 "no pushGuard.allow configured → guard off" origin "refs/heads/feature $A refs/heads/feature $Z"
 
@@ -27,7 +33,11 @@ push 1 "deleting remote main → refused" origin "(delete) $Z refs/heads/main $A
 push 1 "one bad ref among good ones → refused" origin "refs/heads/main $A refs/heads/main $Z
 refs/heads/x $A refs/heads/x $Z"
 push 0 "PUSH_GUARD_OVERRIDE=1 → allowed" origin "refs/heads/feature $A refs/heads/feature $Z" PUSH_GUARD_OVERRIDE=1
+has "push guard overridden — PUSH_GUARD_OVERRIDE=1"
 push 0 "SAFETY_SKIP=push-guard → allowed" origin "refs/heads/feature $A refs/heads/feature $Z" SAFETY_SKIP=push-guard
+has "push-guard skipped — SAFETY_SKIP"
+push 0 "an allowed push says nothing about overrides" origin "refs/heads/main $A refs/heads/main $Z"
+if [ -z "$LAST" ]; then ok "  quiet"; else bad "  an ordinary allowed push printed: $LAST"; fi
 push 0 "empty stdin (nothing to push) → allowed" origin ""
 
 push 1 "pre-commit framework env (no stdin): feature branch → refused" origin "" \
@@ -42,6 +52,11 @@ git config --unset safety.pushGuard.allowDeletes
 git config safety.pushGuard.remote origin
 push 1 "pushGuard.remote=origin: guarded on origin" origin "refs/heads/feature $A refs/heads/feature $Z"
 push 0 "pushGuard.remote=origin: other remotes unguarded" fork "refs/heads/feature $A refs/heads/feature $Z"
+# `git push <url> feature` hands the hook the URL where the name would be: origin's URL is origin
+git remote add origin "$URL"
+push 1 "pushGuard.remote=origin: pushing to origin's URL instead of its name → still guarded" "$URL" "refs/heads/feature $A refs/heads/feature $Z"
+push 0 "pushGuard.remote=origin: some other URL → unguarded" "https://example.invalid/elsewhere.git" "refs/heads/feature $A refs/heads/feature $Z"
+git remote remove origin
 git config --unset safety.pushGuard.remote
 
 # a real push through git to a bare remote

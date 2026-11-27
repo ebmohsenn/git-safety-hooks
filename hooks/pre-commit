@@ -10,7 +10,7 @@
 #   typecheck       OPT-IN   staged-only TypeScript check with a coverage guard (slow)
 #
 # Settings: .git-safety.conf (git-config syntax) or `git config safety.<key>`; see README.
-# Skip one run of a check: SAFETY_SKIP="secret-scan,stale-revert" git commit …
+# Skip one run of a check: SAFETY_SKIP="secret-scan,stale-revert" git commit …   (said when used)
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -19,7 +19,9 @@ LIB="$HOOK_DIR/lib"
 . "$LIB/config.sh"
 cd "$SAFETY_ROOT"
 
-STAGED="$(git diff --cached --name-only --diff-filter=ACMR || true)"
+# core.quotePath=off: otherwise git prints a non-ASCII path as "caf\303\251.ts" and the checks below
+# (which match on the name) silently pass over it. T = type changes (a symlink replaced by a file).
+STAGED="$(git -c core.quotePath=off diff --cached --name-only --diff-filter=ACMRT || true)"
 if [ -z "$STAGED" ] && [ -z "$(git diff --cached --name-only --diff-filter=D || true)" ]; then
   chain_local_hook pre-commit "$@"
   exit 0
@@ -35,12 +37,19 @@ if [ "$(cfg_bool fixPerms.enabled false)" = "true" ] && ! skipped fix-perms && [
 fi
 
 # ── secret scan ────────────────────────────────────────────────────────────────────────────
-if [ "$(cfg_bool secretScan.enabled true)" = "true" ] && ! skipped secret-scan && need_node secret-scan; then
+if [ "$(cfg_bool secretScan.enabled true)" != "true" ]; then
+  # Off on this machine (git config) is the user's own choice. Off because the COMMITTED file says
+  # so is worth a line every time: whoever last edited that file made the choice for everyone.
+  if ! git config --get safety.secretScan.enabled >/dev/null 2>&1; then
+    echo "⚠️  git-safety-hooks: the secret scan is switched OFF by $(_safety_conf_file) (secretScan.enabled)." >&2
+  fi
+elif ! skipped secret-scan && need_node secret-scan; then
   _env_files="$(cfg_all secretScan.envFile)"
   [ -n "$_env_files" ] || _env_files=".env"
   SECRET_SCAN_ENV_FILES="${SECRET_SCAN_ENV_FILES-$_env_files}" \
   SECRET_SCAN_EXTRA_PATTERNS="${SECRET_SCAN_EXTRA_PATTERNS-$(cfg_all secretScan.pattern)}" \
   SECRET_SCAN_IGNORE_PATHS="${SECRET_SCAN_IGNORE_PATHS-$(cfg_all secretScan.ignorePath)}" \
+  SECRET_SCAN_ALLOW_NAMES="${SECRET_SCAN_ALLOW_NAMES-$(cfg_all secretScan.allowName)}" \
     node "$LIB/secret-scan.mjs" || exit 1
 fi
 
@@ -71,31 +80,42 @@ if [ -n "$_mig_dirs" ] && ! skipped migrations; then
   _mdirs=(); IFS=$'\n' read -r -d '' -a _mdirs <<< "$_mig_dirs" || true   # lines → array (bash 3.2: no mapfile)
   _touched=0
   for _d in ${_mdirs[@]+"${_mdirs[@]}"}; do
-    if printf '%s\n' "$STAGED" | grep -q "^${_d%/}/"; then _touched=1; fi
+    if staged_under "$_d"; then _touched=1; fi
   done
   if [ "$_touched" = 1 ]; then run_migration_numbers ${_mdirs[@]+"${_mdirs[@]}"} || exit 1; fi
 fi
 
 # ── staged-only typecheck (opt-in, slow) ───────────────────────────────────────────────────
 _tc_projects="$(cfg_all typecheck.project)"
-if [ -n "$_tc_projects" ] && [ -z "${SKIP_TYPECHECK:-}" ] && ! skipped typecheck && [ -n "$STAGED" ]; then
-  # shellcheck source=lib/typecheck-staged.sh
-  . "$LIB/typecheck-staged.sh"
-  TC_CMD="${TYPECHECK_CMD:-$(cfg_get typecheck.command "npx --no-install tsc")}"
-  TC_EXCLUDES="$(cfg_all typecheck.exclude)"
-  _failed=0
-  _tprojects=(); IFS=$'\n' read -r -d '' -a _tprojects <<< "$_tc_projects" || true   # lines → array (bash 3.2: no mapfile)
-  for _p in ${_tprojects[@]+"${_tprojects[@]}"}; do
-    _pdir="$(dirname "$_p")"
-    if [ "$_pdir" = "." ] || printf '%s\n' "$STAGED" | grep -q "^$_pdir/"; then
-      tc_check_project "$_p" || _failed=1
+if [ -n "$_tc_projects" ] && [ -n "$STAGED" ] && [ "$(cfg_bool typecheck.enabled true)" = "true" ]; then
+  if [ -n "${SKIP_TYPECHECK:-}" ]; then
+    echo "⚠️  git-safety-hooks: typecheck skipped — SKIP_TYPECHECK=$SKIP_TYPECHECK" >&2
+  elif ! skipped typecheck; then
+    # shellcheck source=lib/typecheck-staged.sh
+    . "$LIB/typecheck-staged.sh"
+    # The compiler command is RUN, so it comes from this machine only (the environment or
+    # `git config safety.typecheck.command`), never from the committed .git-safety.conf: a file
+    # that arrives with a clone, a pull or a branch switch must not be able to name a program.
+    TC_CMD="${TYPECHECK_CMD:-$(cfg_local typecheck.command "npx --no-install tsc")}"
+    if cfg_in_repo_file typecheck.command && [ -z "${TYPECHECK_CMD:-}" ] && ! git config --get safety.typecheck.command >/dev/null 2>&1; then
+      echo "⚠️  git-safety-hooks: typecheck.command in $(_safety_conf_file) is ignored (a committed file may not name a" >&2
+      echo "   command to run). To use it on this machine: git config safety.typecheck.command '<command>'" >&2
     fi
-  done
-  if [ "$_failed" -ne 0 ]; then
-    echo ""
-    echo "Fix the errors above, or SKIP_TYPECHECK=1 git commit … if you are deliberately landing"
-    echo "work-in-progress (the fast guards still run)."
-    exit 1
+    TC_EXCLUDES="$(cfg_all typecheck.exclude)"
+    _failed=0
+    _tprojects=(); IFS=$'\n' read -r -d '' -a _tprojects <<< "$_tc_projects" || true   # lines → array (bash 3.2: no mapfile)
+    for _p in ${_tprojects[@]+"${_tprojects[@]}"}; do
+      _pdir="$(dirname "$_p")"
+      if [ "$_pdir" = "." ] || staged_under "$_pdir"; then
+        tc_check_project "$_p" || _failed=1
+      fi
+    done
+    if [ "$_failed" -ne 0 ]; then
+      echo ""
+      echo "Fix the errors above, or SKIP_TYPECHECK=1 git commit … if you are deliberately landing"
+      echo "work-in-progress (the fast guards still run)."
+      exit 1
+    fi
   fi
 fi
 

@@ -20,18 +20,18 @@ run_ratchet() {
     [ -z "${_path:-}" ] && continue
     case "$_add" in ''|*[!0-9]*) continue ;; esac   # binary ("-")
     if [ "$(( _add - _del ))" -gt 0 ]; then
-      grown="${grown}   $_path  +$(( _add - _del )) lines net (+$_add / -$_del)\n"
+      grown="${grown}   $_path  +$(( _add - _del )) lines net (+$_add / -$_del)"$'\n'
     fi
-  done < <(git diff --cached --numstat --no-renames HEAD -- "$@" 2>/dev/null || true)
+  done < <(git -c core.quotePath=off diff --cached --numstat --no-renames HEAD -- "$@" 2>/dev/null || true)
   [ -n "$grown" ] || return 0
   if [ -n "${RATCHET_OVERRIDE:-}" ]; then
     echo "⚠️  shrink-only ratchet overridden — RATCHET_OVERRIDE=\"$RATCHET_OVERRIDE\""
-    printf "%b" "$grown"
+    printf '%s' "$grown"
     return 0
   fi
   echo ""
   echo "✖ commit blocked: these files are shrink-only, and this commit grows them:"
-  printf "%b" "$grown"
+  printf '%s' "$grown"
   echo ""
   [ -n "$hint" ] && echo "   $hint"
   echo "   If this commit genuinely must grow the file (a hotfix, wiring that cannot move out):"
